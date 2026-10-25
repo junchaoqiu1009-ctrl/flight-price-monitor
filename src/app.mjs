@@ -10,7 +10,7 @@ function cityName(code){return citiesFor(config)[code]?.name||code}
 function codes(text){return [...new Set(text.toUpperCase().split(/[,，\s]+/).filter(Boolean))]}
 function read(){
  for(const key of ['origin','end','month','cabin','scope'])config[key]=$(key).value;
- for(const key of numbers)config[key]=$(key).value===''?NaN:Number($(key).value);
+ for(const key of numbers)config[key]=['durationMin','durationMax'].includes(key)?durationValue($(key).value):$(key).value===''?NaN:Number($(key).value);
  for(const key of booleans)config[key]=$(key).checked;
  for(const key of ['allowed','required','avoid'])config[key]=codes($(key).value);
  if(mode==='A'){config.origin='MEL';config.returnToOrigin=true;config.end='MEL';config.reorder=false}
@@ -28,7 +28,7 @@ function renderStops(){
 }
 function summary(){
  const route=[config.origin,...config.stops.map(s=>s.code==='AUTO'?'允许首站':s.code),finalAirport(config)];
- $('summary-route').innerHTML=route.map(esc).join('<span>→</span>');$('summary-mode').textContent=mode==='A'?'A · 个人专用':'B · 通用旅行';$('summary-month').textContent=config.month||'请选择';$('summary-days').textContent=(config.durationMin===config.durationMax?config.durationMin:config.durationMin+'～'+config.durationMax)+' 天';
+ $('summary-route').innerHTML=route.map(esc).join('<span>→</span>');$('summary-mode').textContent=mode==='A'?'A · 个人专用':'B · 通用旅行';$('summary-month').textContent=config.month||'请选择';$('summary-days').textContent=(Number.isSafeInteger(config.durationMin)&&Number.isSafeInteger(config.durationMax)?(config.durationMin===config.durationMax?config.durationMin:config.durationMin+'～'+config.durationMax):'待填写')+' 天';
  $('side-mode').textContent=mode==='A'?'A · 个人专用':'B · 通用旅行';$('rule-badge').textContent=mode==='A'?'广州必停'+(config.enforce?' · 首站受限':' · 首站名单已关闭'):'自由起终点 · 无广州限制';
  $('mode-rule').textContent=mode==='A'?'A 模式必须 MEL 出发并返回、广州先停留；广州后首站默认只允许 BKK / SIN / KUL。转机不能替代正式停留。修改规则需要明确调整设置。':'B 模式无广州要求，可设置单程、往返或异地结束；若是无停留的单程，通常需要将总时长设为 1～2 天。不会继承 A 模式限制。';
  document.querySelectorAll('[data-mode]').forEach(el=>{const selected=el.dataset.mode===mode;el.classList.toggle('selected',selected);el.setAttribute('aria-pressed',String(selected))});
@@ -112,17 +112,38 @@ for(const el of document.querySelectorAll('[data-step]'))el.onclick=()=>go(Numbe
 for(const el of document.querySelectorAll('[data-mode]'))el.onclick=()=>{if(el.dataset.mode===mode)return;read();persist();invalidate();mode=el.dataset.mode;config=profiles[mode];hydrate();renderSaved();go(0);notice('已切换到 '+mode+' 模式。设置独立保存，尚未开始搜索。');persist()};
 for(const key of ['origin','end',...booleans])$(key).addEventListener('change',()=>{read();if(config.returnToOrigin)config.end=config.origin;hydrate();edited()});
 for(const key of ['month','cabin',...numbers.filter(k=>!['durationMin','durationMax'].includes(k)),'allowed','required','avoid'])$(key).addEventListener('change',edited);
+function durationValue(text){
+ const digits=String(text).normalize('NFKC').trim();
+ if(!/^\d+$/.test(digits))return NaN;
+ const value=Number(digits);return Number.isSafeInteger(value)&&value>=1?value:NaN;
+}
+function renderDuration(){
+ for(const id of ['durationMin','durationMax']){
+  const value=config[id];$(id).value=Number.isSafeInteger(value)&&value>=1?String(value):'';
+ }
+ updateDurationButtons();
+}
 function updateDurationButtons(){
- for(const button of document.querySelectorAll('[data-duration]')){const value=Number($(button.dataset.duration).value);button.disabled=Number(button.dataset.delta)<0&&Number.isSafeInteger(value)&&value<=1}
+ for(const id of ['durationMin','durationMax']){
+  const value=config[id];if(Number.isSafeInteger(value)&&value>=1)$(id).setAttribute('aria-valuenow',String(value));else $(id).removeAttribute('aria-valuenow');
+ }
+ for(const button of document.querySelectorAll('[data-duration]')){
+  const value=config[button.dataset.duration];button.disabled=Number(button.dataset.delta)<0&&Number.isSafeInteger(value)&&value<=1;
+ }
+}
+function applyDuration(id,value){
+ // config 是这两个控件共用的状态；一次计算同时更新两端，再同步渲染。
+ const range=linkDurationRange(config.durationMin,config.durationMax,id==='durationMin'?'min':'max',value);
+ config.durationMin=range.min;config.durationMax=range.max;renderDuration();edited();
 }
 function changeDuration(id){
- const value=$(id).value===''?NaN:Number($(id).value);
- try{const range=linkDurationRange(Number($('durationMin').value),Number($('durationMax').value),id==='durationMin'?'min':'max',value);$('durationMin').value=range.min;$('durationMax').value=range.max}catch{}
- updateDurationButtons();edited();
+ const value=durationValue($(id).value);
+ if(!Number.isSafeInteger(value)){edited();updateDurationButtons();return}
+ applyDuration(id,value);
 }
 function stepDuration(id,delta){
- const current=Number($(id).value),base=Number.isSafeInteger(current)&&current>=1?current:delta>0?0:2;
- const next=Math.max(1,base+delta);if(!Number.isSafeInteger(next))return;$(id).value=next;changeDuration(id);
+ const current=config[id],base=Number.isSafeInteger(current)&&current>=1?current:delta>0?0:2;
+ const next=Math.max(1,base+delta);if(!Number.isSafeInteger(next))return;applyDuration(id,next);
 }
 for(const id of ['durationMin','durationMax']){
  $(id).addEventListener('input',()=>changeDuration(id));$(id).addEventListener('change',()=>changeDuration(id));
