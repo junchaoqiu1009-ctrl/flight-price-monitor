@@ -1,43 +1,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {DEFAULTS,clone,validate,search,itinerary,makeOffers,combinations,dayDiff,utcAt,localParts,cabinFor} from '../src/core.mjs';
-const settings=()=>clone(DEFAULTS);
-test('A 模式：广州必停、首站白名单；BKK 仅转机不满足规则，台北/东京默认拒绝',()=>{
- const c=settings();assert.equal(validate(c),true);
- for(const code of ['TPE','HND','CTS']){c.stops=[{code:'CAN',nights:3},{code,nights:4}];assert.throws(()=>validate(c),/允许名单/)}
- c.allowed.push('HND');c.stops[1].code='HND';assert.equal(validate(c),true);
- c.stops[1].nights=0;assert.throws(()=>validate(c),/停留夜数/);c.stops[1].nights=2;c.stops[0].code='BKK';assert.throws(()=>validate(c),/先在广州/);
+import {defaultConfig,clone,validate,estimate,search,departureDates,monthDates,itinerary,makeOffers,combinations,historicalCoverage,cabinFor,utcAt,localParts,dayDiff} from '../src/core.mjs';
+test('A/B 默认设置不共享对象；B 不强制广州或首站允许名单',()=>{
+ const a=defaultConfig('A'),b=defaultConfig('B');a.stops[0].min=3;a.allowed.push('HND');assert.equal(defaultConfig('A').stops[0].min,5);assert.equal(b.stops[0].code,'HND');assert.equal(validate(b),true);
+ b.stops=[{code:'CAN',min:5,max:5},{code:'TPE',min:7,max:9}];assert.equal(validate(b),true);assert.ok(search(b).results.length);
+ a.stops=[{code:'CAN',min:5,max:5},{code:'TPE',min:7,max:9}];assert.throws(()=>validate(a),/允许名单/);
 });
-test('14天只是默认值，7/10/21/30/60天可行；城市停留独立可调，时区和抵达日期一致',()=>{
- for(const days of [7,10,14,18,21,30,60]){const c=settings();c.durationMin=days;c.durationMax=days;c.stops=[{code:'CAN',nights:3},{code:'BKK',nights:1}];const r=search(c);assert.ok(r.results.length,days+'天应有方案');for(const plan of r.results){assert.equal(dayDiff(plan.trip.start,plan.trip.returnDate),days);assert.equal(plan.trip.stays[0].nights,3);assert.equal(plan.trip.flights.at(-1).arr.date,plan.trip.returnDate);assert.ok(plan.trip.stays.every(s=>s.nights>=s.minimum));for(let i=1;i<plan.trip.flights.length;i++)assert.ok(plan.trip.flights[i].departure>plan.trip.flights[i-1].arrival)}}
+test('A 严格执行广州第一站及正式停留，修改白名单才允许台北/东京/札幌',()=>{
+ for(const code of ['TPE','HND','CTS']){const c=defaultConfig();c.stops=[{code:'CAN',min:3,max:3},{code,min:8,max:12}];assert.throws(()=>validate(c),/允许名单/);c.allowed.push(code);assert.equal(validate(c),true)}
+ const c=defaultConfig();c.stops[0].min=0;assert.throws(()=>validate(c),/停留夜数/);c.stops[0].min=5;c.stops[0].code='BKK';assert.throws(()=>validate(c),/先在广州/);
 });
-test('旅行天数范围逐天比较；不合理停留给原因、不放宽要求',()=>{
- const c=settings();c.durationMin=10;c.durationMax=20;const r=search(c);assert.ok(!r.bestByDays[10]);assert.ok(r.bestByDays[14]);assert.ok(r.bestByDays[20]);assert.ok(Object.keys(r.errors).length);assert.deepEqual(c.stops[0],{code:'CAN',nights:5});assert.ok(new Set(Object.values(r.bestByDays).map(r=>r.total)).size>1);
- c.durationMax=9;assert.throws(()=>search(c),/最短旅行天数/);
+test('月份限定出发日而非返程日；快速7天与整月30天明确区分',()=>{
+ const c=defaultConfig();assert.equal(monthDates('2027-09').length,30);assert.equal(monthDates('2028-02').length,29);assert.equal(departureDates(c).length,7);assert.equal(departureDates(c).at(-1),'2027-09-30');
+ c.scope='full';const r=search(c);assert.equal(r.budget.dates,30);assert.equal(Object.keys(r.bestByDate).length,30);assert.ok(r.results.some(p=>p.trip.returnDate.startsWith('2027-10')));assert.ok(r.results.every(p=>p.trip.start.startsWith('2027-09')));
 });
-test('一张票的报价独立；组合精确覆盖旅行段，含非相邻开口往返；总价和节省可追溯',()=>{
- const c=settings();c.missing=false;c.cabin='economy';const trip=itinerary(c,'2027-03-01',14,[{code:'CAN',nights:5},{code:'BKK',nights:4},{code:'TPE',nights:3}]);
- assert.equal(trip.journeys.length,4);assert.equal(trip.flights.length,5);assert.ok(!trip.stays.some(s=>s.code==='HKG'));
- const offers=makeOffers(trip,c,'economy').offers;assert.ok(offers.some(o=>o.type==='开口往返票'&&o.indices.join(',')==='0,3'));
- const full=offers.find(o=>o.indices.length===4),singles=offers.filter(o=>o.indices.length===1);assert.notEqual(full.totalAUD,singles.reduce((s,o)=>s+o.totalAUD,0));
- const plans=combinations(trip,c,'economy',offers);assert.ok(plans.some(p=>p.tickets.length===1));assert.ok(plans.some(p=>p.tickets.length===4));assert.ok(plans.some(p=>p.tickets.some(o=>o.indices.join(',')==='0,3')));
- for(const p of plans){assert.deepEqual(p.tickets.flatMap(t=>t.indices).sort(),[0,1,2,3]);assert.equal(p.total,Math.round(p.tickets.reduce((s,o)=>s+o.totalAUD,0)*100)/100);assert.equal(p.savings,Math.round((full.totalAUD-p.total)*100)/100);assert.equal(p.simulated,true)}
+test('支持14～15天和各城市独立范围；固定停留不被延长以凑总天数',()=>{
+ const c=defaultConfig();c.durationMax=15;const r=search(c);assert.ok(r.bestByDays[14]);assert.ok(r.bestByDays[15]);for(const p of r.results){assert.equal(p.trip.stays[0].nights,5);assert.equal(p.trip.stays[1].nights,4);assert.ok(p.trip.stays[2].nights>=3&&p.trip.stays[2].nights<=5)}
+ c.stops[2].max=3;const none=search(c);assert.equal(none.results.length,0);assert.match(Object.keys(none.errors)[0],/固定停留不会被自动改写/);
 });
-test('报价缺失不伪造联程价；缺整票时单程方案可存在，张数上限严格执行',()=>{
- const c=settings();c.missing=false;const trip=itinerary(c,'2027-03-01',14,[{code:'CAN',nights:5},{code:'BKK',nights:4},{code:'TPE',nights:3}]);const singles=makeOffers(trip,c,'economy').offers.filter(o=>o.indices.length===1);
- c.maxTickets=3;assert.equal(combinations(trip,c,'economy',singles).length,0);c.maxTickets=4;const r=combinations(trip,c,'economy',singles);assert.equal(r.length,1);assert.equal(r[0].baseline,null);assert.equal(r[0].savings,null);
+test('7、10、21、30、60及365天可搜索，无12～18天限制',()=>{
+ for(const days of [7,10,14,18,21,30,60,365]){const c=defaultConfig();c.durationMin=days;c.durationMax=days;c.stops=[{code:'CAN',min:3,max:3},{code:'BKK',min:days-4,max:days-4}];const r=search(c);assert.ok(r.results.length,days+'天');for(const p of r.results){assert.equal(p.trip.days,days);assert.equal(dayDiff(p.trip.start,p.trip.endOriginDate),days)}}
 });
-test('含税票价+行李附加费+币种换算+乘客数量一致；混合舱位逐飞行段判断',()=>{
- const c=settings();c.missing=false;c.passengers=2;const trip=itinerary(c,'2027-03-01',14,[{code:'CAN',nights:5},{code:'BKK',nights:4},{code:'TPE',nights:3}]);const offers=makeOffers(trip,c,'mixed').offers;
- assert.ok(offers.some(o=>o.currency==='CNY'));for(const o of offers){assert.equal(o.fareAUD,Math.round(o.original*o.rate*100)/100);assert.equal(o.totalAUD,Math.round((o.fareAUD+o.baggageExtra)*100)/100);assert.equal(o.taxIncluded,true)}
- assert.equal(cabinFor(trip.flights[0],'mixed'),'business');assert.equal(cabinFor(trip.flights[1],'mixed'),'economy');assert.equal(cabinFor(trip.flights.at(-1),'mixed'),'business');
+test('B 支持悉尼到伦敦异地结束、单程和城市顺序比较',()=>{
+ const c=defaultConfig('B');c.origin='SYD';c.end='LHR';c.returnToOrigin=false;c.stops=[{code:'SIN',min:12,max:14}];c.durationMin=12;c.durationMax=18;assert.ok(search(c).results.some(p=>p.trip.route.join(',')==='SYD,SIN,LHR'));
+ c.origin='MEL';c.end='SIN';c.stops=[];c.durationMin=1;c.durationMax=2;const r=search(c);assert.ok(r.results.length);assert.equal(r.results[0].trip.journeys.length,1);
+ c.returnToOrigin=true;c.stops=[{code:'CAN',min:4,max:4},{code:'TPE',min:8,max:9}];c.durationMin=12;c.durationMax=18;c.reorder=true;assert.equal(estimate(c).routes,2);
 });
-test('墨尔本夏令时换算；飞行时刻与真实日期计算，不以停留夜数相加冒充旅行总天数',()=>{
+test('必经和避开适用于真实结构：HKG短时转机不计到访，但计入避开机场',()=>{
+ const c=defaultConfig();c.required=['HKG'];assert.equal(search(c).results.length,0);c.required=[];c.avoid=['HKG'];const r=search(c);assert.equal(r.results.length,0);assert.ok(Object.keys(r.errors).some(e=>e.includes('需要避开')));c.avoid=[];c.maxTransit=2;assert.equal(search(c).results.length,0);
+});
+test('机票精确覆盖不重不漏；非相邻开口往返、往返与多城市整票有独立报价',()=>{
+ const c=defaultConfig();c.missing=false;const trip=itinerary(c,'2027-09-01',[{code:'CAN',nights:5},{code:'BKK',nights:4},{code:'TPE',nights:4}]);assert.equal(trip.journeys.length,4);assert.equal(trip.flights.length,5);assert.ok(!trip.stays.some(s=>s.code==='HKG'));
+ const offers=makeOffers(trip,c,'economy').offers,plans=combinations(trip,c,'economy',offers),full=offers.find(o=>o.indices.length===4);assert.ok(offers.some(o=>o.indices.join(',')==='0,3'&&o.type==='开口往返票'));assert.notEqual(full.totalAUD,offers.filter(o=>o.indices.length===1).reduce((s,o)=>s+o.totalAUD,0));
+ for(const p of plans){assert.deepEqual(p.tickets.flatMap(o=>o.indices).sort(),[0,1,2,3]);assert.equal(p.total,Math.round(p.tickets.reduce((s,o)=>s+o.totalAUD,0)*100)/100);assert.equal(p.savings,Math.round((full.totalAUD-p.total)*100)/100)}
+ const b=defaultConfig('B'),t=itinerary(b,'2027-09-01',[{code:'HND',nights:13}]);assert.ok(makeOffers(t,b,'economy').offers.some(o=>o.type==='往返票'));
+});
+test('缺失整票不由单程补造；张数、含税/汇率/行李、逐段混舱正确',()=>{
+ const c=defaultConfig();c.missing=false;const t=itinerary(c,'2027-09-01',[{code:'CAN',nights:5},{code:'BKK',nights:4},{code:'TPE',nights:4}]);const offers=makeOffers(t,c,'mixed').offers,singles=offers.filter(o=>o.indices.length===1);c.maxTickets=3;assert.equal(combinations(t,c,'mixed',singles).length,0);c.maxTickets=4;const p=combinations(t,c,'mixed',singles)[0];assert.equal(p.baseline,null);assert.equal(p.savings,null);
+ for(const o of offers){assert.equal(o.fareAUD,Math.round(o.original*o.rate*100)/100);assert.equal(o.totalAUD,Math.round((o.fareAUD+o.baggageExtra)*100)/100);assert.equal(o.simulated,true);assert.equal(o.taxIncluded,true)}assert.equal(cabinFor(t.flights[0],'mixed'),'business');assert.equal(cabinFor(t.flights[1],'mixed'),'economy');
+});
+test('预算在计算前判断且V1外部调用/费用为0；限制候选量而非旅行长度',()=>{
+ const c=defaultConfig();assert.equal(estimate(c).externalCalls,0);assert.equal(estimate(c).costAUD,0);c.stops[2].max=5000;assert.equal(estimate(c).overLimit,true);assert.throws(()=>search(c),/分批/);c.stops[2].min=5000;c.durationMin=5000;c.durationMax=5015;assert.equal(estimate(c).overLimit,false);
+});
+test('历史12个月从未生成模拟价格，不把缺失填0或做便宜月份排名',()=>{
+ const rows=historicalCoverage(new Date('2026-10-25T12:00:00Z'));assert.equal(rows.length,12);assert.equal(rows[0].month,'2025-10');assert.equal(rows.at(-1).month,'2026-09');assert.ok(rows.every(r=>r.price===null&&r.source===null&&r.samples===0));
+});
+test('时区、夏令时与输入校验；无效月份/城市范围不被静默修正',()=>{
  for(const date of ['2027-03-01','2027-06-01','2027-10-05'])assert.equal(localParts(utcAt(date,10,'Australia/Melbourne'),'Australia/Melbourne').stamp,date+' 10:00');
- const c=settings();c.stops=[{code:'CAN',nights:7},{code:'BKK',nights:7}];c.durationMin=7;c.durationMax=7;const r=search(c);assert.equal(r.results.length,0);assert.match(Object.keys(r.errors)[0],/超出/);
-});
-test('不接受负数、空值、不合法日期；大范围提示分批但长旅行本身不受12～18天限制',()=>{
- for(const value of [0,-1,1.2,NaN]){const c=settings();c.durationMin=value;assert.throws(()=>search(c))}
- const c=settings();c.earliest='2027-02-30';assert.throws(()=>search(c),/日期无效/);
- const big=settings();big.durationMin=1;big.durationMax=6000;assert.throws(()=>search(big),/分批/);
+ assert.throws(()=>monthDates('2027-13'));const c=defaultConfig();c.durationMin=30;c.durationMax=14;assert.throws(()=>validate(c),/最短旅行天数/);c.durationMin=14;c.stops[0].min=NaN;assert.throws(()=>validate(c),/停留夜数/);
 });
