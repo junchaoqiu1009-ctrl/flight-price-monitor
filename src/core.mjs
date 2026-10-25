@@ -14,6 +14,11 @@ export function localParts(ms,zone){if(!formatters.has(zone))formatters.set(zone
 export function utcAt(date,hour,zone){const target=Date.parse(date+`T${String(hour).padStart(2,'0')}:00:00Z`);let guess=target;for(let i=0;i<4;i++){const p=localParts(guess,zone);const shown=Date.parse(p.date+'T'+p.time+':00Z');guess+=target-shown}return guess}
 export function citiesFor(config){return {...CITIES,...config.custom}}
 const integer=(n,min,label)=>{if(!Number.isSafeInteger(n)||n<min)throw new Error(label+'必须是'+min+'以上的整数。')};
+// 修改哪端就以哪端为准，只在发生冲突时联动另一端。
+export function linkDurationRange(min,max,changed,value){
+ if(!['min','max'].includes(changed)||!Number.isSafeInteger(value)||value<1)throw new Error('旅行天数必须为1以上的整数。');
+ return changed==='min'?{min:value,max:Number.isSafeInteger(max)&&max>=value?max:value}:{min:Number.isSafeInteger(min)&&min>=1&&min<=value?min:value,max:value};
+}
 export function monthDates(month){if(!/^\d{4}-\d{2}$/.test(month))throw new Error('请选择有效的出发月份。');const year=Number(month.slice(0,4)),m=Number(month.slice(5));if(year<1000||year>9998||m<1||m>12)throw new Error('出发月份超出可表示范围。');const count=new Date(Date.UTC(year,m,0)).getUTCDate();return Array.from({length:count},(_,i)=>month+'-'+String(i+1).padStart(2,'0'))}
 export function departureDates(config){const dates=monthDates(config.month);if(config.scope==='full')return dates;const indices=new Set([0,5,10,15,20,25,dates.length-1].filter(i=>i<dates.length));return [...indices].sort((a,b)=>a-b).map(i=>dates[i])}
 export const finalAirport=config=>config.returnToOrigin?config.origin:config.end;

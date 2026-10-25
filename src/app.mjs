@@ -1,4 +1,4 @@
-import {CITIES,defaultConfig,clone,money,citiesFor,validate,estimate,search,finalAirport,historicalCoverage,cabinFor,AIRLINES} from './core.mjs';
+import {CITIES,defaultConfig,clone,money,citiesFor,validate,linkDurationRange,estimate,search,finalAirport,historicalCoverage,cabinFor,AIRLINES} from './core.mjs';
 const $=id=>document.getElementById(id),KEY='flight-price-monitor-demand-v1-schema2';
 const CABINS={economy:'经济舱',business:'商务舱',mixed:'混合舱位'};
 const esc=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -38,7 +38,7 @@ function hydrate(){
  $('origin').innerHTML=cityOptions(config.origin);$('end').innerHTML=cityOptions(finalAirport(config));
  for(const key of ['origin','end','month','cabin','scope',...numbers])$(key).value=Number.isNaN(config[key])?'':config[key];
  for(const key of booleans)$(key).checked=config[key];for(const key of ['allowed','required','avoid'])$(key).value=config[key].join(', ');
- $('origin').disabled=mode==='A';$('returnToOrigin').disabled=mode==='A';$('end').disabled=config.returnToOrigin;$('reorder').disabled=mode==='A';$('allowed-field').hidden=mode!=='A';$('enforce-field').hidden=mode!=='A';renderStops();summary();
+ $('origin').disabled=mode==='A';$('returnToOrigin').disabled=mode==='A';$('end').disabled=config.returnToOrigin;$('reorder').disabled=mode==='A';$('allowed-field').hidden=mode!=='A';$('enforce-field').hidden=mode!=='A';renderStops();summary();updateDurationButtons();
 }
 function setBusy(on){$('search').disabled=on;$('cancel').hidden=!on;$('scope').disabled=on;$('busy-label').textContent=on?'正在本地比较独立整票和拆票组合…':''}
 function cancel(){generation++;worker?.terminate();worker=null;setBusy(false)}
@@ -111,7 +111,24 @@ $('to-history').onclick=()=>go(1);$('to-search').onclick=()=>go(2);$('search').o
 for(const el of document.querySelectorAll('[data-step]'))el.onclick=()=>go(Number(el.dataset.step));
 for(const el of document.querySelectorAll('[data-mode]'))el.onclick=()=>{if(el.dataset.mode===mode)return;read();persist();invalidate();mode=el.dataset.mode;config=profiles[mode];hydrate();renderSaved();go(0);notice('已切换到 '+mode+' 模式。设置独立保存，尚未开始搜索。');persist()};
 for(const key of ['origin','end',...booleans])$(key).addEventListener('change',()=>{read();if(config.returnToOrigin)config.end=config.origin;hydrate();edited()});
-for(const key of ['month','cabin',...numbers,'allowed','required','avoid'])$(key).addEventListener('change',edited);
+for(const key of ['month','cabin',...numbers.filter(k=>!['durationMin','durationMax'].includes(k)),'allowed','required','avoid'])$(key).addEventListener('change',edited);
+function updateDurationButtons(){
+ for(const button of document.querySelectorAll('[data-duration]')){const value=Number($(button.dataset.duration).value);button.disabled=Number(button.dataset.delta)<0&&Number.isSafeInteger(value)&&value<=1}
+}
+function changeDuration(id){
+ const value=$(id).value===''?NaN:Number($(id).value);
+ try{const range=linkDurationRange(Number($('durationMin').value),Number($('durationMax').value),id==='durationMin'?'min':'max',value);$('durationMin').value=range.min;$('durationMax').value=range.max}catch{}
+ updateDurationButtons();edited();
+}
+function stepDuration(id,delta){
+ const current=Number($(id).value),base=Number.isSafeInteger(current)&&current>=1?current:delta>0?0:2;
+ const next=Math.max(1,base+delta);if(!Number.isSafeInteger(next))return;$(id).value=next;changeDuration(id);
+}
+for(const id of ['durationMin','durationMax']){
+ $(id).addEventListener('input',()=>changeDuration(id));$(id).addEventListener('change',()=>changeDuration(id));
+ $(id).addEventListener('keydown',e=>{if(e.key==='ArrowUp'||e.key==='ArrowDown'){e.preventDefault();stepDuration(id,e.key==='ArrowUp'?1:-1)}});
+}
+for(const button of document.querySelectorAll('[data-duration]'))button.onclick=()=>stepDuration(button.dataset.duration,Number(button.dataset.delta));
 $('scope').onchange=()=>{edited();renderBudget()};
 $('add-stop').onclick=()=>{read();if(config.stops.length>=5)return;const code=Object.keys(citiesFor(config)).find(code=>!config.stops.some(s=>s.code===code)&&![config.origin,finalAirport(config)].includes(code));if(code){config.stops.push({code,min:2,max:2});renderStops();edited()}};
 $('add-city').onclick=()=>{const code=$('custom-code').value.trim().toUpperCase(),name=$('custom-name').value.trim(),zone=$('custom-zone').value;if(!/^[A-Z]{3}$/.test(code)||!name){notice('请填写 3 位英文机场代码和名称。',true);return}if(Object.hasOwn(citiesFor(config),code)){notice('该机场代码已存在。',true);return}read();config.custom[code]={name,zone};hydrate();edited();$('custom-code').value='';$('custom-name').value='';notice('已为 '+mode+' 模式添加 '+name+' '+code+'。飞行时间仍为模拟；作为 A 首站时还需加入允许名单。')};
