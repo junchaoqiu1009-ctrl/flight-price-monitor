@@ -17,12 +17,42 @@ function read(){
  if(config.returnToOrigin)config.end=config.origin;config.mode=mode;profiles[mode]=config;return config;
 }
 function cityOptions(current,excluded=[]){return Object.entries(citiesFor(config)).filter(([code])=>!excluded.includes(code)||code===current).map(([code,city])=>`<option value="${esc(code)}" ${code===current?'selected':''}>${esc(city.name)} ${esc(code)}</option>`).join('')}
+function stayControl(index,field,value){
+ const label='第'+(index+1)+'站'+(field==='min'?'最短':'最长')+'停留夜数';
+ return `<div class="stay-control stay-${field}"><label class="stay-caption" for="stay-${index}-${field}">${field==='min'?'最短夜数':'最长夜数'}</label><div class="stay-stepper" role="group" aria-label="${label}"><button type="button" data-stay-index="${index}" data-stay-field="${field}" data-stay-delta="-1" aria-label="减少${label}" ${Number.isSafeInteger(value)&&value<=1?'disabled':''}>−</button><input id="stay-${index}-${field}" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" role="spinbutton" aria-valuemin="1" ${Number.isSafeInteger(value)?'aria-valuenow="'+value+'"':''} data-${field}="${index}" value="${Number.isSafeInteger(value)?value:''}" aria-label="${label}"><button type="button" data-stay-index="${index}" data-stay-field="${field}" data-stay-delta="1" aria-label="增加${label}">＋</button></div></div>`;
+}
+function renderStayValues(index){
+ const stop=config.stops[index];
+ for(const field of ['min','max']){
+  const input=$('stops').querySelector('input[data-'+field+'="'+index+'"]'),value=stop[field];
+  input.value=Number.isSafeInteger(value)?String(value):'';
+  if(Number.isSafeInteger(value))input.setAttribute('aria-valuenow',String(value));else input.removeAttribute('aria-valuenow');
+  const minus=$('stops').querySelector('[data-stay-index="'+index+'"][data-stay-field="'+field+'"][data-stay-delta="-1"]');minus.disabled=Number.isSafeInteger(value)&&value<=1;
+ }
+}
+function applyStay(index,field,value){
+ const stop=config.stops[index],range=linkDurationRange(stop.min,stop.max,field,value);
+ stop.min=range.min;stop.max=range.max;renderStayValues(index);edited();
+}
+function changeStay(index,field,input){
+ const value=durationValue(input.value);
+ if(!Number.isSafeInteger(value)){config.stops[index][field]=NaN;input.removeAttribute('aria-valuenow');edited();return}
+ applyStay(index,field,value);
+}
+function stepStay(index,field,delta){
+ const current=config.stops[index][field],base=Number.isSafeInteger(current)&&current>=1?current:delta>0?0:2,next=Math.max(1,base+delta);
+ if(Number.isSafeInteger(next))applyStay(index,field,next);
+}
 function renderStops(){
  $('stops').innerHTML=config.stops.map((stop,i)=>{const locked=mode==='A'&&i===0,up=i>0&&!(mode==='A'&&i===1)&&stop.code!=='AUTO'&&config.stops[i-1]?.code!=='AUTO',down=i<config.stops.length-1&&!locked&&stop.code!=='AUTO'&&config.stops[i+1]?.code!=='AUTO';
- return `<div class="stop"><span class="stop-marker">${i+1}</span>${locked?'<div class="fixed-stop">广州 CAN <span>必停</span></div>':`<select data-city="${i}" aria-label="第${i+1}停留城市">${mode==='A'&&i===1?'<option value="AUTO" '+(stop.code==='AUTO'?'selected':'')+'>自动比较允许城市</option>':''}${cityOptions(stop.code,[config.origin,finalAirport(config),...(mode==='A'?['CAN']:[])])}</select>`}<input type="number" min="1" step="1" data-min="${i}" value="${Number.isFinite(stop.min)?stop.min:''}" aria-label="第${i+1}站最短停留夜数"><input type="number" min="1" step="1" data-max="${i}" value="${Number.isFinite(stop.max)?stop.max:''}" aria-label="第${i+1}站最长停留夜数"><div class="stop-controls">${locked?'':`<button class="icon-btn" data-up="${i}" ${up?'':'disabled'} aria-label="上移第${i+1}站">↑</button><button class="icon-btn" data-down="${i}" ${down?'':'disabled'} aria-label="下移第${i+1}站">↓</button><button class="icon-btn" data-remove="${i}" aria-label="删除第${i+1}站">×</button>`}</div></div>`}).join('');
+ return `<div class="stop"><span class="stop-marker">${i+1}</span><div class="stop-city">${locked?'<div class="fixed-stop">广州 CAN <span>必停</span></div>':`<select data-city="${i}" aria-label="第${i+1}停留城市">${mode==='A'&&i===1?'<option value="AUTO" '+(stop.code==='AUTO'?'selected':'')+'>自动比较允许城市</option>':''}${cityOptions(stop.code,[config.origin,finalAirport(config),...(mode==='A'?['CAN']:[])])}</select>`}</div>${stayControl(i,'min',stop.min)}${stayControl(i,'max',stop.max)}<div class="stop-controls">${locked?'':`<button class="icon-btn" data-up="${i}" ${up?'':'disabled'} aria-label="上移第${i+1}站">↑</button><button class="icon-btn" data-down="${i}" ${down?'':'disabled'} aria-label="下移第${i+1}站">↓</button><button class="icon-btn" data-remove="${i}" aria-label="删除第${i+1}站">×</button>`}</div></div>`}).join('');
  $('add-stop').disabled=config.stops.length>=5;
  $('stops').querySelectorAll('[data-city]').forEach(el=>el.onchange=()=>{config.stops[Number(el.dataset.city)].code=el.value;renderStops();edited()});
- for(const field of ['min','max'])$('stops').querySelectorAll('[data-'+field+']').forEach(el=>el.oninput=()=>{config.stops[Number(el.dataset[field])][field]=el.value===''?NaN:Number(el.value);edited()});
+ for(const field of ['min','max'])$('stops').querySelectorAll('input[data-'+field+']').forEach(el=>{
+  const index=Number(el.dataset[field]);el.oninput=()=>changeStay(index,field,el);el.onchange=()=>changeStay(index,field,el);
+  el.onkeydown=e=>{if(e.key==='ArrowUp'||e.key==='ArrowDown'){e.preventDefault();stepStay(index,field,e.key==='ArrowUp'?1:-1)}};
+ });
+ $('stops').querySelectorAll('[data-stay-delta]').forEach(button=>button.onclick=()=>stepStay(Number(button.dataset.stayIndex),button.dataset.stayField,Number(button.dataset.stayDelta)));
  $('stops').querySelectorAll('[data-remove]').forEach(el=>el.onclick=()=>{config.stops.splice(Number(el.dataset.remove),1);renderStops();edited()});
  for(const [name,delta] of [['up',-1],['down',1]])$('stops').querySelectorAll('[data-'+name+']').forEach(el=>el.onclick=()=>{const i=Number(el.dataset[name]);[config.stops[i],config.stops[i+delta]]=[config.stops[i+delta],config.stops[i]];renderStops();edited()});
 }
